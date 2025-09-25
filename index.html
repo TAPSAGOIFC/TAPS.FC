@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Tapsagoi FC Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: Arial, sans-serif; margin:0; padding:0; }
+    header { background:#007bff; color:#fff; padding:10px; text-align:center; }
+    nav { display:flex; background:#eee; overflow-x:auto; }
+    nav button { flex:1; padding:10px; border:none; background:#ddd; cursor:pointer; }
+    nav button.active { background:#007bff; color:white; }
+    section { padding:10px; }
+    .hidden { display:none; }
+    .chatBox { height:300px; overflow-y:auto; border:1px solid #ccc; padding:6px; display:flex; flex-direction:column; gap:6px; }
+    .msg { display:inline-block; max-width:75%; padding:8px 10px; border-radius:16px; font-size:14px; line-height:1.2; box-shadow:0 1px 0 rgba(0,0,0,0.05); }
+    .sender { align-self:flex-end; background:#e0ffe0; border-bottom-right-radius:4px; }
+    .receiver { align-self:flex-start; background:#f0f0f0; border-bottom-left-radius:4px; }
+    .small { font-size:0.65em; color:#666; margin-top:4px; display:block; text-align:left; }
+    table { width:100%; border-collapse: collapse; margin-top:10px; }
+    th, td { border:1px solid #ccc; padding:6px; text-align:center; }
+    th { background:#f5f5f5; }
+    input[type="number"], input[type="text"] { padding:6px; margin:3px 2px; width:85px; box-sizing:border-box; }
+    @media (min-width:700px){ input[type="number"], input[type="text"] { width:110px; } }
+    .btn-small { padding:4px 8px; font-size:13px; cursor:pointer; }
+    .delBtn { color:red; cursor:pointer; margin-left:6px; font-size:12px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Tapsagoi FC Dashboard</h1>
+  <div>
+    <span id="userLabel"></span>
+    <button id="authBtn">Sign In</button>
+  </div>
+</header>
+<nav id="nav"></nav>
+<section id="content"></section>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  getFirestore, collection, addDoc, doc, setDoc, onSnapshot,
+  serverTimestamp, query, orderBy, deleteDoc, getDocs, where
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyASG-7uwf7QRyPKQ4kfJcp87vTEG8KXnW0",
+  authDomain: "tapsagoi-fc.firebaseapp.com",
+  projectId: "tapsagoi-fc",
+  storageBucket: "tapsagoi-fc.appspot.com",
+  messagingSenderId: "654243649455",
+  appId: "1:654243649455:web:bf92b7d55cff487ca8415a",
+  measurementId: "G-NHMH46F93K"
+};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const storage = getStorage(app);
+
+const ADMIN_EMAIL = "kiplagatg701@gmail.com";
+let currentUser=null;
+
+// --- Auth ---
+const authBtn=document.getElementById('authBtn');
+const userLabel=document.getElementById('userLabel');
+authBtn.onclick=()=> {
+  if(currentUser){ signOut(auth); }
+  else{
+    const email=prompt("Email:");
+    const pass=prompt("Password:");
+    if(!email || !pass) return alert('Provide email & password');
+    signInWithEmailAndPassword(auth,email,pass).catch(async (err)=>{
+      try { await createUserWithEmailAndPassword(auth,email,pass); }
+      catch(e){ alert(e.message || 'Auth error'); }
+    });
+  }
+};
+onAuthStateChanged(auth,user=>{
+  currentUser=user;
+  userLabel.textContent=user?user.email:"Not signed in";
+  authBtn.textContent=user?"Sign Out":"Sign In";
+  if(user) checkUserRegistration();
+});
+
+// --- Check registration ---
+async function checkUserRegistration() {
+  if (!currentUser) return;
+
+  const email = currentUser.email;
+  const playerSnap = await getDocs(query(collection(db, "players"), where("email", "==", email)));
+  const officialSnap = await getDocs(query(collection(db, "officials"), where("email", "==", email)));
+
+  if (!playerSnap.empty || !officialSnap.empty) {
+    navigate("home");
+    return true;
+  }
+  showRegistrationChoice();
+  return false;
+}
+
+function showRegistrationChoice() {
+  const c = document.getElementById("content");
+  c.innerHTML = `
+    <h2>Welcome ${currentUser.email}</h2>
+    <p>You are new. Please register as either:</p>
+    <button id="registerPlayerBtn">⚽ Register as Player</button>
+    <button id="registerOfficialBtn">🏅 Register as Official</button>
+  `;
+  document.getElementById("registerPlayerBtn").onclick = () => {
+    initPlayers();
+    document.getElementById("playerForm").style.display = "block";
+  };
+  document.getElementById("registerOfficialBtn").onclick = () => {
+    initOfficials();
+    document.getElementById("officialForm").style.display = "block";
+  };
+}
+
+// --- Navigation ---
+const routes=[
+  {id:"home",label:"Chats"},
+  {id:"players",label:"Players"},
+  {id:"officials",label:"Officials"},
+  {id:"fixtures",label:"Fixtures"},
+  {id:"standings",label:"Standings"},
+  {id:"gallery",label:"Gallery"},
+  {id:"about",label:"About"}
+];
+const nav=document.getElementById('nav');
+routes.forEach(r=>{
+  const btn=document.createElement("button");
+  btn.textContent=r.label;
+  btn.onclick=()=>navigate(r.id);
+  btn.id="btn-"+r.id;
+  nav.appendChild(btn);
+});
+function navigate(id){
+  document.querySelectorAll("nav button").forEach(b=>b.classList.remove("active"));
+  document.getElementById("btn-"+id).classList.add("active");
+  if(id==="home") initHome();
+  if(id==="players") initPlayers();
+  if(id==="officials") initOfficials();
+  if(id==="fixtures") initFixtures();
+  if(id==="standings") initStandings();
+  if(id==="gallery") initGallery();
+  if(id==="about") initAbout();
+}
+
+// --- Chat ---
+let chatListener=null;
+function initHome(){
+  const c=document.getElementById("content");
+  c.innerHTML=`
+    <h2>Club Chat</h2>
+    <div class="chatBox" id="chatWindow"></div>
+    <form id="chatForm" style="display:flex;gap:6px;margin-top:8px;">
+      <input id="chatInput" placeholder="Type..." style="flex:1;padding:8px;border:1px solid #ccc;border-radius:8px;">
+      <button class="btn-small">Send</button>
+    </form>`;
+  const chatCol=collection(db,"chat");
+  if(chatListener) chatListener();
+  chatListener=onSnapshot(query(chatCol,orderBy("ts")), (snap)=>{
+    const w=document.getElementById("chatWindow");
+    w.innerHTML="";
+    snap.forEach(docu=>{
+      const m=docu.data();
+      const div=document.createElement("div");
+      div.className = "msg " + ((currentUser && m.fromUid===currentUser.uid) ? "sender" : "receiver");
+      let timeText = m.ts?.toDate? new Date(m.ts.toDate()).toLocaleTimeString() : "";
+      div.innerHTML = `<div>${escapeHtml(m.text||"")}</div><div class="small">${escapeHtml(m.fromEmail||'')} ${timeText}</div>`;
+      if(currentUser && currentUser.email===ADMIN_EMAIL){
+        const del=document.createElement("span");
+        del.textContent="🗑";
+        del.className="delBtn";
+        del.onclick=()=> deleteDoc(doc(db,"chat",docu.id));
+        div.appendChild(del);
+      }
+      w.appendChild(div);
+    });
+    w.scrollTop=w.scrollHeight;
+  });
+  document.getElementById("chatForm").onsubmit=async e=>{
+    e.preventDefault();
+    if(!currentUser) return alert("Sign in");
+    const text=document.getElementById("chatInput").value.trim();
+    if(!text) return;
+    await addDoc(chatCol,{text,fromUid:currentUser.uid,fromEmail:currentUser.email,ts:serverTimestamp()});
+    document.getElementById("chatInput").value="";
+  };
+}
+
+// --- Players ---
+function initPlayers() {
+  const c = document.getElementById("content");
+  c.innerHTML = `
+    <h2>Players</h2>
+    <button id="openRegisterBtn">➕ Register</button>
+    <form id="playerForm" style="display:none; margin-top:10px;">
+      <input type="text" id="playerName" placeholder="Full Name" required>
+      <input type="text" id="playerPosition" placeholder="Position" required>
+      <input type="tel" id="playerPhone" placeholder="Phone Number" required>
+      <button type="submit">Register</button>
+    </form>
+    <h3>Registered Players</h3>
+    <table id="playersTable" style="width:100%; border-collapse:collapse; text-align:center;">
+      <thead style="background:green; color:green;">
+        <tr>
+          <th>#</th>
+          <th>Full Name</th>
+          <th>Position</th>
+          <th>Phone</th>
+          <th>Email</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  `;
+  const form = c.querySelector("#playerForm");
+  const openBtn = c.querySelector("#openRegisterBtn");
+  const tbody = c.querySelector("#playersTable tbody");
+  const playersCol = collection(db, "players");
+
+  async function checkIfRegistered() {
+    if (!currentUser) return false;
+    const qSnap = await getDocs(query(playersCol, where("email", "==", currentUser.email)));
+    return !qSnap.empty;
+  }
+
+  openBtn.onclick = async () => {
+    if (!currentUser) {
+      alert("You must be logged in to register.");
+      return;
+    }
+    const exists = await checkIfRegistered();
+    if (exists) {
+      alert("You are already registered.");
+      return;
+    }
+    form.style.display = "block";
+  };
+
+  const q = query(playersCol, orderBy("position", "asc"));
+  onSnapshot(q, (snap) => {
+    tbody.innerHTML = "";
+    let index = 1;
+    snap.forEach((docu) => {
+      const p = docu.data();
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${index++}</td>
+        <td>${p.name}</td>
+        <td>${p.position}</td>
+        <td>${p.phone || "-"}</td>
+        <td>${p.email}</td>
+        <td>${currentUser && currentUser.email === ADMIN_EMAIL 
+            ? `<button class="deleteBtn" data-id="${docu.id}" style="color:red;">❌</button>` : ""}</td>`;
+      tbody.appendChild(tr);
+    });
+    tbody.querySelectorAll(".deleteBtn").forEach(btn => {
+      btn.onclick = async () => {
+        if (confirm("Delete this player?")) {
+          await deleteDoc(doc(db, "players", btn.dataset.id));
+        }
+      };
+    });
+  });
+
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    if (!currentUser) return alert("You must be logged in");
+    const name = document.getElementById("playerName").value.trim();
+    const position = document.getElementById("playerPosition").value.trim();
+    const phone = document.getElementById("playerPhone").value.trim();
+    const email = currentUser.email;
+    const exists = await checkIfRegistered();
+    if (exists) {
+      alert("You are already registered!");
+      form.style.display = "none";
+      return;
+    }
+    await addDoc(playersCol, { name, position, phone, email, createdAt: serverTimestamp() });
+    form.reset();
+    form.style.display = "none";
+    alert("✅ Registration successful");
+  };
+}
+
+// --- Officials ---
+function initOfficials() {
+  const c = document.getElementById("content");
+  c.innerHTML = `
+    <h2>Officials</h2>
+    <button id="openOfficialRegisterBtn">➕ Register as Official</button>
+    <form id="officialForm" style="display:none; margin-top:10px;">
+      <input type="text" id="officialRole" placeholder="Role" required>
+      <input type="text" id="officialName" placeholder="Full Name" required>
+      <input type="tel" id="officialPhone" placeholder="Phone Number" required>
+      <button type="submit">Register</button>
+    </form>
+    <h3>Registered Officials</h3>
+    <table id="officialsTable" style="width:100%; border-collapse:collapse; text-align:center;">
+      <thead style="background:#007bff; color:green;">
+        <tr>
+          <th>#</th>
+          <th>Role</th>
+          <th>Name</th>
+          <th>Phone</th>
+          <th>Email</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  `;
+
+  const form = c.querySelector("#officialForm");
+  const openBtn = c.querySelector("#openOfficialRegisterBtn");
+  const tbody = c.querySelector("#officialsTable tbody");
+  const officialsCol = collection(db, "officials");
+
+  async function checkIfRegistered() {
+    if (!currentUser) return false;
+    const qSnap = await getDocs(query(officialsCol, where("email", "==", currentUser.email)));
+    return !qSnap.empty;
+  }
+
+  openBtn.onclick = async () => {
+    if (!currentUser) {
+      alert("You must be logged in to register.");
+      return;
+    }
+    const exists = await checkIfRegistered();
+    if (exists) {
+      alert("You are already registered as an Official.");
+      return;
+    }
+    form.style.display = "block";
+  };
+
+  const q = query(officialsCol, orderBy("role", "asc"));
+  onSnapshot(q, (snap) => {
+    tbody.innerHTML = "";
+    let index = 1;
+    snap.forEach((docu) => {
+      const o = docu.data();
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${index++}</td>
+        <td>${o.role}</td>
+        <td>${o.name}</td>
+        <td>${o.phone || "-"}</td>
+        <td>${o.email}</td>
+        <td>${currentUser && currentUser.email === ADMIN_EMAIL 
+            ? `<button class="deleteBtn" data-id="${docu.id}" style="color:red;">❌</button>` : ""}</td>`;
+      tbody.appendChild(tr);
+    });
+    tbody.querySelectorAll(".deleteBtn").forEach(btn => {
+      btn.onclick = async () => {
+        if (confirm("Delete this official?")) {
+          await deleteDoc(doc(db, "officials", btn.dataset.id));
+        }
+      };
+    });
+  });
+
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    if (!currentUser) return alert("You must be logged in");
+    const role = document.getElementById("officialRole").value.trim();
+    const name = document.getElementById("officialName").value.trim();
+    const phone = document.getElementById("officialPhone").value.trim();
+    const email = currentUser.email;
+    const exists = await checkIfRegistered();
+    if (exists) {
+      alert("You are already registered as an Official!");
+      form.style.display = "none";
+      return;
+    }
+    await addDoc(officialsCol, { role, name, phone, email, createdAt: serverTimestamp() });
+    form.reset();
+    form.style.display = "none";
+    alert("✅ Registration successful");
+  };
+}
+function initStandings() {
+  const c = document.getElementById("content");
+  c.innerHTML = `
+    <h2>League Standings</h2>
+    <table id="standingsTable" style="width:100%; text-align:center; border-collapse:collapse; font-size:15px;">
+      <thead style="background:green; color:blue;">
+        <tr>
+          <th style="padding:6px;">#</th>
+          <th style="padding:6px;">Team</th>
+          <th style="padding:6px;">MP</th>
+          <th style="padding:6px;">W</th>
+          <th style="padding:6px;">D</th>
+          <th style="padding:6px;">L</th>
+          <th style="padding:6px;">GF</th>
+          <th style="padding:6px;">GA</th>
+          <th style="padding:6px;">GD</th>
+          <th style="padding:6px;">Pts</th>
+          <th style="padding:6px;">Action</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div style="margin-top:10px;">
+      <button id="addRowBtn">+ Add Row</button>
+      <button id="saveStandingsBtn">💾 Save Standings</button>
+    </div>
+    <style>
+      #standingsTable th, #standingsTable td {
+        border:1px solid #ccc;
+        padding:6px;
+      }
+      #standingsTable tbody tr:nth-child(odd) {
+        background:#f9f9f9;
+      }
+      #standingsTable tbody tr:nth-child(even) {
+        background:#eaf2ff;
+      }
+      #standingsTable td[contenteditable="true"] {
+        background:#fffceb;
+        cursor:text;
+      }
+    </style>
+  `;
+
+  const tbody = c.querySelector("tbody");
+  const standingsCol = collection(db, "standings");
+
+  // Live load
+  onSnapshot(standingsCol, (snap) => {
+    tbody.innerHTML = "";
+    let rows = [];
+    snap.forEach((docu) => {
+      const row = docu.data();
+      rows.push({ ...row, id: docu.id });
+    });
+
+    // Sort: Points → GD → GF
+    rows.sort((a, b) => b.points - a.points || b.gd - a.gd || b.gf - a.gf);
+
+    rows.forEach((row, index) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${index + 1}</td>
+        <td contenteditable="true" data-field="team">${row.team || ""}</td>
+        <td data-field="mp">${row.mp || 0}</td>
+        <td contenteditable="true" data-field="w">${row.w || 0}</td>
+        <td contenteditable="true" data-field="d">${row.d || 0}</td>
+        <td contenteditable="true" data-field="l">${row.l || 0}</td>
+        <td contenteditable="true" data-field="gf">${row.gf || 0}</td>
+        <td contenteditable="true" data-field="ga">${row.ga || 0}</td>
+        <td data-field="gd">${row.gd || 0}</td>
+        <td data-field="points">${row.points || 0}</td>
+        <td>
+          ${currentUser && currentUser.email === ADMIN_EMAIL 
+            ? `<button class="deleteBtn" data-id="${row.id}" style="color:red;">❌</button>` 
+            : ""}
+        </td>
+      `;
+      tr.dataset.id = row.id;
+      tbody.appendChild(tr);
+    });
+
+    // Delete team (admin only)
+    tbody.querySelectorAll(".deleteBtn").forEach(btn => {
+      btn.onclick = async () => {
+        if (confirm("Delete this team?")) {
+          await deleteDoc(doc(db, "standings", btn.dataset.id));
+        }
+      };
+    });
+
+    // Auto-update points when admin edits
+    tbody.querySelectorAll("td[contenteditable=true]").forEach(cell => {
+      cell.oninput = () => recalcRow(cell.closest("tr"));
+    });
+  });
+
+  // Add new row
+  document.getElementById("addRowBtn").onclick = () => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>?</td>
+      <td contenteditable="true" data-field="team"></td>
+      <td data-field="mp">0</td>
+      <td contenteditable="true" data-field="w">0</td>
+      <td contenteditable="true" data-field="d">0</td>
+      <td contenteditable="true" data-field="l">0</td>
+      <td contenteditable="true" data-field="gf">0</td>
+      <td contenteditable="true" data-field="ga">0</td>
+      <td data-field="gd">0</td>
+      <td data-field="points">0</td>
+      <td></td>
+    `;
+    tbody.appendChild(tr);
+
+    // bind live recalc
+    tr.querySelectorAll("td[contenteditable=true]").forEach(cell => {
+      cell.oninput = () => recalcRow(tr);
+    });
+  };
+
+  // Save standings
+  document.getElementById("saveStandingsBtn").onclick = async () => {
+    const rows = tbody.querySelectorAll("tr");
+    for (const [i, tr] of rows.entries()) {
+      const team = tr.querySelector('[data-field="team"]').innerText.trim();
+      const w = parseInt(tr.querySelector('[data-field="w"]').innerText) || 0;
+      const d = parseInt(tr.querySelector('[data-field="d"]').innerText) || 0;
+      const l = parseInt(tr.querySelector('[data-field="l"]').innerText) || 0;
+      const gf = parseInt(tr.querySelector('[data-field="gf"]').innerText) || 0;
+      const ga = parseInt(tr.querySelector('[data-field="ga"]').innerText) || 0;
+      const mp = w + d + l;
+      const gd = gf - ga;
+      const points = (w * 3) + d;
+
+      tr.querySelector('[data-field="mp"]').innerText = mp;
+      tr.querySelector('[data-field="gd"]').innerText = gd;
+      tr.querySelector('[data-field="points"]').innerText = points;
+      tr.querySelector("td").innerText = i + 1;
+
+      if (team) {
+        const id = tr.dataset.id || doc(collection(db, "standings")).id;
+        await setDoc(doc(db, "standings", id), {
+          team, mp, w, d, l, gf, ga, gd, points
+        });
+      }
+    }
+    alert("Standings updated ✅");
+  };
+}
+
+// Helper → recalc one row live
+function recalcRow(tr) {
+  const w = parseInt(tr.querySelector('[data-field="w"]').innerText) || 0;
+  const d = parseInt(tr.querySelector('[data-field="d"]').innerText) || 0;
+  const l = parseInt(tr.querySelector('[data-field="l"]').innerText) || 0;
+  const gf = parseInt(tr.querySelector('[data-field="gf"]').innerText) || 0;
+  const ga = parseInt(tr.querySelector('[data-field="ga"]').innerText) || 0;
+  const mp = w + d + l;
+  const gd = gf - ga;
+  const points = (w * 3) + d;
+
+  tr.querySelector('[data-field="mp"]').innerText = mp;
+  tr.querySelector('[data-field="gd"]').innerText = gd;
+  tr.querySelector('[data-field="points"]').innerText = points;
+}
+// --- Fixtures ---
+function initFixtures(){
+  const c=document.getElementById("content");
+  c.innerHTML=`<h2>Fixtures</h2>
+    <form id="fixForm">
+      <input name="match" placeholder="Match" required>
+      <input name="date" placeholder="Date" required>
+      <input name="type" placeholder="League Type" required>
+      <input name="venue" placeholder="Venue" required>
+      <button>Add</button>
+    </form>
+    <ul id="fixList"></ul>`;
+  const col=collection(db,"fixtures");
+  document.getElementById("fixForm").onsubmit=async e=>{
+    e.preventDefault();
+    if(!currentUser) return alert("Sign in");
+    await addDoc(col,Object.fromEntries(new FormData(e.target).entries()));
+    e.target.reset();
+  };
+  onSnapshot(col,snap=>{
+    const ul=document.getElementById("fixList"); ul.innerHTML="";
+    snap.forEach(d=>{
+      const f=d.data();
+      let li=document.createElement("li");
+      li.textContent=`${f.match} - ${f.date} (${f.type}, ${f.venue})`;
+      if(currentUser && currentUser.email===ADMIN_EMAIL){ // ADMIN DELETE
+        let del=document.createElement("span");
+        del.textContent="🗑";
+        del.className="delBtn";
+        del.onclick=()=> deleteDoc(doc(db,"fixtures",d.id));
+        li.appendChild(del);
+      }
+      ul.appendChild(li);
+    });
+  });
+}
+
+
+function initGallery(){
+  const c = document.getElementById("content");
+  c.innerHTML = `
+    <h2>Gallery</h2>
+    <p style="color:green; font-size:18px; font-weight:bold;">COMING SOON 🤣🤣🤣</p>
+  `;
+}
+function initAbout(){
+  const c = document.getElementById("content");
+  c.innerHTML = `
+    <h2>About</h2>
+    <p style="color:green; white-space:pre-line;">
+Tapsagoi FC – Passion. Pride. Power. 🏆
+
+Founded with a vision to unite talent and passion for football, Tapsagoi Football Club is more than just a team — it’s a family. Based in the heart of the community, we are committed to developing exceptional players, fostering teamwork, and inspiring fans both on and off the pitch.
+
+With a spirit rooted in discipline, dedication, and determination, Tapsagoi FC competes fiercely in local and regional competitions, aiming to bring glory to our supporters. Our motto — "Play with heart, win with pride" — reflects our relentless pursuit of excellence.
+
+Join us on our journey as we chase victory, build legends, and keep the love of football alive. 💙⚽🔥
+    </p>
+  `;
+}
+
+
+// (Fixtures, Standings, Gallery, About remain unchanged from your version — omitted for brevity, but should stay as in your code)
+
+// --- Escape ---
+function escapeHtml(str){return String(str).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&#39;");}
+</script>
+</body>
+</html>
